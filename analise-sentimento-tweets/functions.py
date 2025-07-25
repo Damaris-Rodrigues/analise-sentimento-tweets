@@ -2,6 +2,7 @@ import pandas as pd
 import os
 import numpy as np
 import re
+import torch
 from sentence_transformers import SentenceTransformer
 import nltk
 from transformers import pipeline
@@ -59,7 +60,7 @@ def generate_tfidf(df):
 
     # Cria o vetorizador TF-IDF com as seguintes configurações:
     vectorizer = TfidfVectorizer(
-        max_features=20, # Limita o número de termos mais frequentes
+        max_features=10, # Limita o número de termos mais frequentes
         ngram_range=(1, 2), # Considera unigramas e bigramas (ex: "bom", "dia", "bom dia")
         min_df=5, # Ignora termos que aparecem em menos de 5 documentos
         max_df=0.9 # Ignora termos que aparecem em mais de 90% dos documentos
@@ -78,19 +79,22 @@ def generate_tfidf(df):
 
 def generate_embeddings(df, model_name):
     print(f"Calculando embeddings com o modelo: {model_name}")
+    
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    print(f"Usando dispositivo: {device.upper()}")
+    
     # Extrai a coluna 'texto_processado'
     texts = df['texto_processado'].fillna("").to_numpy()
     # Carrega o modelo pré-treinado de embeddings
     model = SentenceTransformer(model_name)
     # Gera os embeddings para todos os textos, com barra de progresso
-    embeddings = model.encode(texts, show_progress_bar=True)
+    embeddings = model.encode(texts, show_progress_bar=True, device=device)
     # Converte os embeddings para um DataFrame, mantendo o mesmo índice do df original
     df_emb = pd.DataFrame(embeddings, index=df.index)
     # Renomeia as colunas do DataFrame para indicar o modelo e a posição do vetor (ex: emb_x0, x1, ..., x767)
     df_emb.columns = [f"{model_name.replace('/', '_')}_x{i}" for i in range(df_emb.shape[1])]
 
     return df_emb
-
 
 def classificator(INPUT_PATH, COLUMN_TYPES, BASE_PATH, TEXT_COLUMN):
     file_path = os.path.join(INPUT_PATH, 'ginastica_2022.xlsx')
@@ -150,7 +154,7 @@ def split_data(X, y, texts, random_state=42):
     return X_train, X_val, X_test, y_train, y_val, y_test, texts_train, texts_val, texts_test
 
 
-def train_and_evaluate_nb(X_train, y_train, X_val, y_val, X_test, y_test, texts_test):
+def train_and_evaluate_nb(RESULTS, X_train, y_train, X_val, y_val, X_test, y_test, texts_test):
     print("\nModelo 1: Naive Bayes (TF-IDF)")
     tfidf_cols = [col for col in X_train.columns if col.startswith("tfidf_")]
     
@@ -171,7 +175,9 @@ def train_and_evaluate_nb(X_train, y_train, X_val, y_val, X_test, y_test, texts_
     print(f"Acurácia teste: {accuracy_score(y_test, y_test_pred):.4f}")
     print(f"F1-score teste (macro): {f1_score(y_test, y_test_pred, average='macro'):.4f}")
 
-def train_and_evaluate_lr(X_train, y_train, X_val, y_val, X_test, y_test, texts_test, embedding_model):
+    analyze_errors_nb(RESULTS, model, X_test, y_test, texts_test, tfidf_cols)
+
+def train_and_evaluate_lr(RESULTS, X_train, y_train, X_val, y_val, X_test, y_test, texts_test, embedding_model):
     print(f"\nModelo 2: Logistic Regression ({embedding_model})")
     safe_model_name = embedding_model.replace("/", "-")
     emb_cols = [col for col in X_train.columns if col.startswith(safe_model_name)]
@@ -209,6 +215,8 @@ def train_and_evaluate_lr(X_train, y_train, X_val, y_val, X_test, y_test, texts_
         plt.legend()
         plt.grid(True)
         plt.show()
+    
+    analyze_errors(RESULTS, model, X_test, y_test, texts_test, emb_cols, safe_model_name)
 
 def evaluate_distilbert(texts_val, y_val, texts_test, y_test):
     print("\nModelo 3: DistilBERT (pré-treinado Hugging Face)")
@@ -228,4 +236,39 @@ def evaluate_distilbert(texts_val, y_val, texts_test, y_test):
     print(f"Acurácia teste: {accuracy_score(y_test.tolist(), preds_test):.4f}")
     print(f"F1-score teste (macro): {f1_score(y_test.tolist(), preds_test, average='macro'):.4f}")
 
+#----------- Analise de erros ----------
+def analyze_errors(RESULTS, model, X_test, y_test, texts_test, emb_cols, model_name):
+    y_pred = model.predict(X_test[emb_cols])
+    errors = []
 
+    for i in range(len(y_test)):
+        if y_pred[i] != y_test.iloc[i]:
+            errors.append({
+                "Texto": texts_test[i],
+                "Verdadeiro": y_test.iloc[i],
+                "Predito": y_pred[i]
+            })
+
+    # Exibe os 10 primeiros erros
+    print(f"\nExemplos de erros de classificação ({model_name}):")
+    for e in errors[:10]:
+    # Salva em excel
+        errors_df = pd.DataFrame(errors)
+    errors_df.to_excel(os.path.join(RESULTS, f"errors_{model_name}.xlsx"), index=False)
+    print(f"\nArquivo com erros salvo em: errors_{model_name}.xlsx")
+    
+def analyze_errors_nb(RESULTS, model, X_test, y_test, texts_test, tfidf_cols):
+    y_pred = model.predict(X_test[tfidf_cols])
+    errors = []
+
+    for i in range(len(y_test)):
+        if y_pred[i] != y_test.iloc[i]:
+            errors.append({
+                "Texto": texts_test[i],
+                "Verdadeiro": y_test.iloc[i],
+                "Predito": y_pred[i]
+            })
+
+    errors_df = pd.DataFrame(errors)
+    errors_df.to_excel(os.path.join(RESULTS, "errors_nb.xlsx"), index=False)
+    print(f"\nArquivo com erros (Naive Bayes) salvo: errors_nb.xlsx")

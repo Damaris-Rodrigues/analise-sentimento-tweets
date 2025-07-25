@@ -15,9 +15,10 @@ BASE_PATH = 'data/'
 INPUT_PATH = os.path.join(BASE_PATH, 'input/')
 OUTPUT_PATH = os.path.join(BASE_PATH, 'embeddings/')
 PREPROCESSED_PATH = BASE_PATH + 'output/'
+RESULTS = BASE_PATH + 'results/'
 EMBEDDING_MODELS = [
-    'google-bert/bert-base-uncased',
-]
+    'all-MiniLM-L6-v2',
+] #'google-bert/bert-base-uncased'
 TEXT_COLUMN = 'Texto'
 COLUMN_TYPES = {'ID': str}
 df_original = pd.read_excel(os.path.join(INPUT_PATH, "ginastica_2022.xlsx"), dtype={"ID": str})
