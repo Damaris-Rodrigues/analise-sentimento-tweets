@@ -157,66 +157,120 @@ def split_data(X, y, texts, random_state=42):
 def train_and_evaluate_nb(RESULTS, X_train, y_train, X_val, y_val, X_test, y_test, texts_test):
     print("\nModelo 1: Naive Bayes (TF-IDF)")
     tfidf_cols = [col for col in X_train.columns if col.startswith("tfidf_")]
-    
-    model = MultinomialNB()
-    model.fit(X_train[tfidf_cols], y_train)
-    
-    # Validação
-    y_val_pred = model.predict(X_val[tfidf_cols])
-    print("Validação:")
+
+    best_alpha = None
+    best_f1 = -1
+    best_model = None
+
+    # Lista de alphas para testar
+    alphas = [0.01, 0.1, 0.3, 0.5, 1.0, 2.0, 5.0]
+
+    print(" Ajustando hiperparâmetro alpha...")
+    for alpha in alphas:
+        model = MultinomialNB(alpha=alpha)
+        model.fit(X_train[tfidf_cols], y_train)
+        y_val_pred = model.predict(X_val[tfidf_cols])
+        f1 = f1_score(y_val, y_val_pred, average='macro')
+        print(f"alpha={alpha:.2f} -> F1 (macro): {f1:.4f}")
+        if f1 > best_f1:
+            best_f1 = f1
+            best_alpha = alpha
+            best_model = model
+
+    print(f"\n Melhor alpha encontrado: {best_alpha} com F1 (macro) = {best_f1:.4f}")
+
+    # Validação final com melhor modelo
+    print("\nValidação:")
+    y_val_pred = best_model.predict(X_val[tfidf_cols])
     print(classification_report(y_val, y_val_pred))
     print(f"Acurácia validação: {accuracy_score(y_val, y_val_pred):.4f}")
     print(f"F1-score validação (macro): {f1_score(y_val, y_val_pred, average='macro'):.4f}")
-    
-    # Teste
-    y_test_pred = model.predict(X_test[tfidf_cols])
-    print("Teste:")
+
+    # Teste com melhor modelo
+    print("\nTeste:")
+    y_test_pred = best_model.predict(X_test[tfidf_cols])
     print(classification_report(y_test, y_test_pred))
     print(f"Acurácia teste: {accuracy_score(y_test, y_test_pred):.4f}")
     print(f"F1-score teste (macro): {f1_score(y_test, y_test_pred, average='macro'):.4f}")
 
-    analyze_errors_nb(RESULTS, model, X_test, y_test, texts_test, tfidf_cols)
+    # (Opcional) análise de erros
+    if 'analyze_errors_nb' in globals():
+        analyze_errors_nb(RESULTS, best_model, X_test, y_test, texts_test, tfidf_cols)
+
+    return best_model
 
 def train_and_evaluate_lr(RESULTS, X_train, y_train, X_val, y_val, X_test, y_test, texts_test, embedding_model):
     print(f"\nModelo 2: Logistic Regression ({embedding_model})")
     safe_model_name = embedding_model.replace("/", "-")
     emb_cols = [col for col in X_train.columns if col.startswith(safe_model_name)]
-    
-    model = LogisticRegression(max_iter=1000)
-    model.fit(X_train[emb_cols], y_train)
-    
-    # Validação
-    y_val_pred = model.predict(X_val[emb_cols])
-    print("Validação:")
+
+    Cs = [0.01, 0.1, 1.0, 2.0]
+    penalties = ['l1', 'l2']
+    best_f1 = -1
+    best_params = None
+    best_model = None
+
+    for penalty in penalties:
+        for C in Cs:
+            try:
+                model = LogisticRegression(
+                    penalty=penalty,
+                    C=C,
+                    max_iter=1000,
+                    solver='saga'
+                )
+                model.fit(X_train[emb_cols], y_train)
+                y_val_pred = model.predict(X_val[emb_cols])
+                f1 = f1_score(y_val, y_val_pred, average='macro')
+
+                print(f"Teste: penalty={penalty}, C={C} -> F1 val (macro): {f1:.4f}")
+
+                if f1 > best_f1:
+                    best_f1 = f1
+                    best_params = {'penalty': penalty, 'C': C}
+                    best_model = model
+            except Exception as e:
+                print(f"Erro com penalty={penalty}, C={C}: {e}")
+
+    print(f"\nMelhor modelo: penalty={best_params['penalty']}, C={best_params['C']} com F1 val (macro)={best_f1:.4f}")
+
+    # Avaliação no conjunto de validação (melhor modelo)
+    print("\nValidação (melhor modelo):")
+    y_val_pred = best_model.predict(X_val[emb_cols])
     print(classification_report(y_val, y_val_pred))
     print(f"Acurácia validação: {accuracy_score(y_val, y_val_pred):.4f}")
     print(f"F1-score validação (macro): {f1_score(y_val, y_val_pred, average='macro'):.4f}")
-    
-    # Teste
-    y_test_pred = model.predict(X_test[emb_cols])
-    y_test_proba = model.predict_proba(X_test[emb_cols])
-    print("Teste:")
+
+    # Avaliação no conjunto de teste
+    print("\nTeste (melhor modelo):")
+    y_test_pred = best_model.predict(X_test[emb_cols])
+    y_test_proba = best_model.predict_proba(X_test[emb_cols])
     print(classification_report(y_test, y_test_pred))
     print(f"Acurácia teste: {accuracy_score(y_test, y_test_pred):.4f}")
     print(f"F1-score teste (macro): {f1_score(y_test, y_test_pred, average='macro'):.4f}")
-    
-    # ROC-AUC
-    if 'POSITIVE' in model.classes_:
-        pos_idx = list(model.classes_).index('POSITIVE')
+
+    # Plot curva ROC para classe POSITIVE
+    if 'POSITIVE' in best_model.classes_:
+        pos_idx = list(best_model.classes_).index('POSITIVE')
         y_test_bin = y_test.map({'NEGATIVE': 0, 'POSITIVE': 1})
         roc_auc = roc_auc_score(y_test_bin, y_test_proba[:, pos_idx])
         print(f"ROC-AUC teste: {roc_auc:.4f}")
+
         fpr, tpr, _ = roc_curve(y_test_bin, y_test_proba[:, pos_idx])
+        plt.figure(figsize=(8,6))
         plt.plot(fpr, tpr, label=f"Logistic Regression (AUC = {roc_auc:.2f})")
         plt.plot([0, 1], [0, 1], 'k--')
         plt.title("Curva ROC - Logistic Regression")
-        plt.xlabel("FPR")
-        plt.ylabel("TPR")
+        plt.xlabel("False Positive Rate (FPR)")
+        plt.ylabel("True Positive Rate (TPR)")
         plt.legend()
         plt.grid(True)
         plt.show()
-    
-    analyze_errors(RESULTS, model, X_test, y_test, texts_test, emb_cols, safe_model_name)
+
+    # Análise de erros
+    analyze_errors(RESULTS, best_model, X_test, y_test, texts_test, emb_cols, safe_model_name)
+
+    return best_model
 
 def evaluate_distilbert(texts_val, y_val, texts_test, y_test):
     print("\nModelo 3: DistilBERT (pré-treinado Hugging Face)")

@@ -29,7 +29,7 @@ if __name__ == "__main__":
     #Pre processa os dados
     df_process = process_dataframe(INPUT_PATH, COLUMN_TYPES, TEXT_COLUMN)
     
-    '''# Classifica em sentimentos negativos ou positivos (NÃO MEXER AQUI, POIS ESTÁ CLASSIFICADO)
+    '''# Classifica em sentimentos negativos ou positivos
     df_class = classificator(INPUT_PATH, COLUMN_TYPES, TEXT_COLUMN, TEXT_COLUMN)'''
     
     # Gera TF-IDF
