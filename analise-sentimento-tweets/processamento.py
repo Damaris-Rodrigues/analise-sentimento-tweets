@@ -2,13 +2,7 @@ import pandas as pd
 import os
 import datetime
 from tqdm import tqdm
-from sklearn.model_selection import train_test_split
-from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import classification_report, accuracy_score, f1_score, roc_auc_score, roc_curve
 from functions import process_dataframe, generate_embeddings, generate_tfidf, classificator
-from sklearn.naive_bayes import MultinomialNB
-from transformers import pipeline
-import matplotlib.pyplot as plt
 
 # Configurações
 BASE_PATH = 'data/'
@@ -29,8 +23,8 @@ if __name__ == "__main__":
     #Pre processa os dados
     df_process = process_dataframe(INPUT_PATH, COLUMN_TYPES, TEXT_COLUMN)
     
-    '''# Classifica em sentimentos negativos ou positivos
-    df_class = classificator(INPUT_PATH, COLUMN_TYPES, TEXT_COLUMN, TEXT_COLUMN)'''
+    # Classifica em sentimentos negativos ou positivos
+    df_class = classificator(INPUT_PATH, COLUMN_TYPES, TEXT_COLUMN, TEXT_COLUMN)
     
     # Gera TF-IDF
     print("\n Gerando TF-IDF:")

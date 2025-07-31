@@ -4,7 +4,6 @@ import numpy as np
 import re
 import torch
 from sentence_transformers import SentenceTransformer
-import nltk
 from transformers import pipeline
 from tqdm import tqdm
 from nltk.corpus import stopwords
@@ -13,8 +12,9 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.model_selection import train_test_split
 from sklearn.naive_bayes import MultinomialNB
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import classification_report, accuracy_score, f1_score, roc_auc_score, roc_curve
+from sklearn.metrics import classification_report, accuracy_score, f1_score, roc_auc_score, roc_curve, auc
 import matplotlib.pyplot as plt
+from sklearn.preprocessing import label_binarize
 
 RANDOM_STATE = 42
 
@@ -29,7 +29,7 @@ def process_dataframe(INPUT_PATH, COLUMN_TYPES, TEXT_COLUMN):
     df.drop(columns=set(drop_cols) & set(df.columns), inplace=True)
 
     # Stopwords e tokenizer
-    stopwords_set = set(stopwords.words('portuguese'))
+    stopwords_set = set(stopwords.words('english'))
     tokenizer = TreebankWordTokenizer()
 
     def preprocess_text(text):
@@ -60,7 +60,7 @@ def generate_tfidf(df):
 
     # Cria o vetorizador TF-IDF com as seguintes configurações:
     vectorizer = TfidfVectorizer(
-        max_features=10, # Limita o número de termos mais frequentes
+        max_features=500, # Limita o número de termos mais frequentes
         ngram_range=(1, 2), # Considera unigramas e bigramas (ex: "bom", "dia", "bom dia")
         min_df=5, # Ignora termos que aparecem em menos de 5 documentos
         max_df=0.9 # Ignora termos que aparecem em mais de 90% dos documentos
@@ -107,7 +107,7 @@ def classificator(INPUT_PATH, COLUMN_TYPES, BASE_PATH, TEXT_COLUMN):
         raise ValueError("Coluna 'ID' não encontrada no arquivo.")
 
     # Carrega o modelo de análise de sentimento
-    sentiment_analyzer = pipeline("sentiment-analysis", model="distilbert-base-uncased-finetuned-sst-2-english")
+    sentiment_analyzer = pipeline("sentiment-analysis", model="cardiffnlp/twitter-roberta-base-sentiment-latest")
 
     # Aplica o modelo nos textos (limitando a 512 caracteres por input)
     texts = df[TEXT_COLUMN].fillna("").tolist()
@@ -154,23 +154,38 @@ def split_data(X, y, texts, random_state=42):
     return X_train, X_val, X_test, y_train, y_val, y_test, texts_train, texts_val, texts_test
 
 
-def train_and_evaluate_nb(RESULTS, X_train, y_train, X_val, y_val, X_test, y_test, texts_test):
-    print("\nModelo 1: Naive Bayes (TF-IDF)")
-    tfidf_cols = [col for col in X_train.columns if col.startswith("tfidf_")]
+def train_and_evaluate_nb_binary(RESULTS, X_train, y_train, X_val, y_val, X_test, y_test, texts_test):
+    print("\nModelo 1: Naive Bayes (TF-IDF) - Binário (POSITIVE vs NEGATIVE)")
+    y_train = y_train.str.upper()
+    y_val = y_val.str.upper()
+    y_test = y_test.str.upper()
+    
+    # Filtra apenas POSITIVE e NEGATIVE
+    mask_train = y_train.isin(["POSITIVE", "NEGATIVE"])
+    mask_val = y_val.isin(["POSITIVE", "NEGATIVE"])
+    mask_test = y_test.isin(["POSITIVE", "NEGATIVE"])
+
+    X_train_bin = X_train[mask_train]
+    y_train_bin = y_train[mask_train]
+    X_val_bin = X_val[mask_val]
+    y_val_bin = y_val[mask_val]
+    X_test_bin = X_test[mask_test]
+    y_test_bin = y_test[mask_test]
+    texts_test_bin = [t for t, keep in zip(texts_test, mask_test) if keep]
+
+    tfidf_cols = [col for col in X_train_bin.columns if col.startswith("tfidf_")]
 
     best_alpha = None
     best_f1 = -1
     best_model = None
-
-    # Lista de alphas para testar
     alphas = [0.01, 0.1, 0.3, 0.5, 1.0, 2.0, 5.0]
 
     print(" Ajustando hiperparâmetro alpha...")
     for alpha in alphas:
         model = MultinomialNB(alpha=alpha)
-        model.fit(X_train[tfidf_cols], y_train)
-        y_val_pred = model.predict(X_val[tfidf_cols])
-        f1 = f1_score(y_val, y_val_pred, average='macro')
+        model.fit(X_train_bin[tfidf_cols], y_train_bin)
+        y_val_pred = model.predict(X_val_bin[tfidf_cols])
+        f1 = f1_score(y_val_bin, y_val_pred, average='macro')
         print(f"alpha={alpha:.2f} -> F1 (macro): {f1:.4f}")
         if f1 > best_f1:
             best_f1 = f1
@@ -179,23 +194,50 @@ def train_and_evaluate_nb(RESULTS, X_train, y_train, X_val, y_val, X_test, y_tes
 
     print(f"\n Melhor alpha encontrado: {best_alpha} com F1 (macro) = {best_f1:.4f}")
 
-    # Validação final com melhor modelo
+    # Validação
     print("\nValidação:")
-    y_val_pred = best_model.predict(X_val[tfidf_cols])
-    print(classification_report(y_val, y_val_pred))
-    print(f"Acurácia validação: {accuracy_score(y_val, y_val_pred):.4f}")
-    print(f"F1-score validação (macro): {f1_score(y_val, y_val_pred, average='macro'):.4f}")
+    y_val_pred = best_model.predict(X_val_bin[tfidf_cols])
+    print(classification_report(y_val_bin, y_val_pred))
+    print(f"Acurácia validação: {accuracy_score(y_val_bin, y_val_pred):.4f}")
+    print(f"F1-score validação (macro): {f1_score(y_val_bin, y_val_pred, average='macro'):.4f}")
 
-    # Teste com melhor modelo
+    # Teste
     print("\nTeste:")
-    y_test_pred = best_model.predict(X_test[tfidf_cols])
-    print(classification_report(y_test, y_test_pred))
-    print(f"Acurácia teste: {accuracy_score(y_test, y_test_pred):.4f}")
-    print(f"F1-score teste (macro): {f1_score(y_test, y_test_pred, average='macro'):.4f}")
+    y_test_pred = best_model.predict(X_test_bin[tfidf_cols])
+    print(classification_report(y_test_bin, y_test_pred))
+    print(f"Acurácia teste: {accuracy_score(y_test_bin, y_test_pred):.4f}")
+    print(f"F1-score teste (macro): {f1_score(y_test_bin, y_test_pred, average='macro'):.4f}")
 
-    # (Opcional) análise de erros
+    if set(best_model.classes_) == {"POSITIVE", "NEGATIVE"}:
+        pos_idx = list(best_model.classes_).index('POSITIVE')
+        neg_idx = list(best_model.classes_).index('NEGATIVE')
+
+        y_test_bin_pos = y_test_bin.map({'NEGATIVE': 0, 'POSITIVE': 1})
+        y_test_bin_neg = y_test_bin.map({'NEGATIVE': 1, 'POSITIVE': 0})
+
+        y_test_proba = best_model.predict_proba(X_test_bin[tfidf_cols])
+
+        # ROC-AUC Positive
+        roc_auc_pos = roc_auc_score(y_test_bin_pos, y_test_proba[:, pos_idx])
+        fpr_pos, tpr_pos, _ = roc_curve(y_test_bin_pos, y_test_proba[:, pos_idx])
+
+        # ROC-AUC Negative
+        roc_auc_neg = roc_auc_score(y_test_bin_neg, y_test_proba[:, neg_idx])
+        fpr_neg, tpr_neg, _ = roc_curve(y_test_bin_neg, y_test_proba[:, neg_idx])
+
+        plt.figure(figsize=(8,6))
+        plt.plot(fpr_pos, tpr_pos, label=f"POSITIVE (AUC = {roc_auc_pos:.2f})")
+        plt.plot(fpr_neg, tpr_neg, label=f"NEGATIVE (AUC = {roc_auc_neg:.2f})", linestyle='--')
+        plt.plot([0, 1], [0, 1], 'k--')
+        plt.title("Curvas ROC - Naive Bayes (POSITIVE vs NEGATIVE)")
+        plt.xlabel("False Positive Rate")
+        plt.ylabel("True Positive Rate")
+        plt.legend()
+        plt.grid(True)
+        plt.show()
+        
     if 'analyze_errors_nb' in globals():
-        analyze_errors_nb(RESULTS, best_model, X_test, y_test, texts_test, tfidf_cols)
+        analyze_errors_nb(RESULTS, best_model, X_test_bin, y_test_bin, texts_test_bin, tfidf_cols)
 
     return best_model
 
@@ -249,20 +291,49 @@ def train_and_evaluate_lr(RESULTS, X_train, y_train, X_val, y_val, X_test, y_tes
     print(f"Acurácia teste: {accuracy_score(y_test, y_test_pred):.4f}")
     print(f"F1-score teste (macro): {f1_score(y_test, y_test_pred, average='macro'):.4f}")
 
-    # Plot curva ROC para classe POSITIVE
-    if 'POSITIVE' in best_model.classes_:
-        pos_idx = list(best_model.classes_).index('POSITIVE')
-        y_test_bin = y_test.map({'NEGATIVE': 0, 'POSITIVE': 1})
-        roc_auc = roc_auc_score(y_test_bin, y_test_proba[:, pos_idx])
-        print(f"ROC-AUC teste: {roc_auc:.4f}")
+    # Plot curva ROC para 2 ou mais classes
+    classes = best_model.classes_
+    y_test_proba = best_model.predict_proba(X_test[emb_cols])
 
-        fpr, tpr, _ = roc_curve(y_test_bin, y_test_proba[:, pos_idx])
+    if len(classes) == 2:
+        # Caso binário (mantém lógica original)
+        pos_idx = list(classes).index('POSITIVE')
+        neg_idx = list(classes).index('NEGATIVE')
+
+        y_test_bin_pos = y_test.map({'NEGATIVE': 0, 'POSITIVE': 1})
+        y_test_bin_neg = y_test.map({'NEGATIVE': 1, 'POSITIVE': 0})
+
+        roc_auc_pos = roc_auc_score(y_test_bin_pos, y_test_proba[:, pos_idx])
+        fpr_pos, tpr_pos, _ = roc_curve(y_test_bin_pos, y_test_proba[:, pos_idx])
+
+        roc_auc_neg = roc_auc_score(y_test_bin_neg, y_test_proba[:, neg_idx])
+        fpr_neg, tpr_neg, _ = roc_curve(y_test_bin_neg, y_test_proba[:, neg_idx])
+
         plt.figure(figsize=(8,6))
-        plt.plot(fpr, tpr, label=f"Logistic Regression (AUC = {roc_auc:.2f})")
+        plt.plot(fpr_pos, tpr_pos, label=f"POSITIVE (AUC = {roc_auc_pos:.2f})")
+        plt.plot(fpr_neg, tpr_neg, label=f"NEGATIVE (AUC = {roc_auc_neg:.2f})", linestyle='--')
         plt.plot([0, 1], [0, 1], 'k--')
-        plt.title("Curva ROC - Logistic Regression")
-        plt.xlabel("False Positive Rate (FPR)")
-        plt.ylabel("True Positive Rate (TPR)")
+        plt.title("Curvas ROC - Logistic Regression (Binário)")
+        plt.xlabel("False Positive Rate")
+        plt.ylabel("True Positive Rate")
+        plt.legend()
+        plt.grid(True)
+        plt.show()
+
+    else:
+        # Caso multi-classe (One-vs-Rest)
+        y_bin = label_binarize(y_test, classes=classes)
+
+        plt.figure(figsize=(8,6))
+        for i, cls in enumerate(classes):
+            fpr, tpr, _ = roc_curve(y_bin[:, i], y_test_proba[:, i])
+            roc_auc = auc(fpr, tpr)
+            plt.plot(fpr, tpr, label=f"{cls} (AUC = {roc_auc:.2f})")
+
+        plt.plot([0, 1], [0, 1], 'k--')
+        plt.title("Curvas ROC - Logistic Regression (Multi-classe OvR)")
+        plt.xlabel("False Positive Rate")
+        plt.ylabel("True Positive Rate")
         plt.legend()
         plt.grid(True)
         plt.show()
@@ -272,23 +343,79 @@ def train_and_evaluate_lr(RESULTS, X_train, y_train, X_val, y_val, X_test, y_tes
 
     return best_model
 
-def evaluate_distilbert(texts_val, y_val, texts_test, y_test):
-    print("\nModelo 3: DistilBERT (pré-treinado Hugging Face)")
-    sentiment_model = pipeline("sentiment-analysis", model="distilbert-base-uncased-finetuned-sst-2-english")
+def evaluate_distilbert_binary(texts_val, y_val, texts_test, y_test):
+    print("\nModelo 3: DistilBERT (binário POSITIVE vs NEGATIVE)")
+
+    y_val = y_val.str.upper()
+    y_test = y_test.str.upper()
     
-    # Validação
-    preds_val = [sentiment_model(text[:512])[0]['label'] for text in texts_val]
+    # Filtra apenas POSITIVE e NEGATIVE
+    mask_val = y_val.isin(["POSITIVE", "NEGATIVE"])
+    mask_test = y_test.isin(["POSITIVE", "NEGATIVE"])
+
+    texts_val_bin = [t for t, keep in zip(texts_val, mask_val) if keep]
+    y_val_bin = y_val[mask_val]
+
+    texts_test_bin = [t for t, keep in zip(texts_test, mask_test) if keep]
+    y_test_bin = y_test[mask_test]
+
+    sentiment_model = pipeline("sentiment-analysis", 
+                               model="distilbert-base-uncased-finetuned-sst-2-english",
+                               truncation=True,
+                               device=0 if torch.cuda.is_available() else -1,
+                               batch_size=32)
+
+    def normalize_label(label):
+        return label.upper()
+
+    # ----- Validação -----
+    preds_val_raw = sentiment_model(texts_val_bin)
+    preds_val = [normalize_label(p['label']) for p in preds_val_raw]
+    y_val_norm = [normalize_label(label) for label in y_val_bin]
+
     print("Validação:")
-    print(classification_report(y_val.tolist(), preds_val))
-    print(f"Acurácia validação: {accuracy_score(y_val.tolist(), preds_val):.4f}")
-    print(f"F1-score validação (macro): {f1_score(y_val.tolist(), preds_val, average='macro'):.4f}")
-    
-    # Teste
-    preds_test = [sentiment_model(text[:512])[0]['label'] for text in texts_test]
+    print(classification_report(y_val_norm, preds_val))
+    print(f"Acurácia validação: {accuracy_score(y_val_norm, preds_val):.4f}")
+    print(f"F1-score validação (macro): {f1_score(y_val_norm, preds_val, average='macro'):.4f}")
+
+    # ----- Teste -----
+    preds_test_raw = sentiment_model(texts_test_bin)
+    preds_test = [normalize_label(p['label']) for p in preds_test_raw]
+    y_test_norm = [normalize_label(label) for label in y_test_bin]
+
     print("Teste:")
-    print(classification_report(y_test.tolist(), preds_test))
-    print(f"Acurácia teste: {accuracy_score(y_test.tolist(), preds_test):.4f}")
-    print(f"F1-score teste (macro): {f1_score(y_test.tolist(), preds_test, average='macro'):.4f}")
+    print(classification_report(y_test_norm, preds_test))
+    print(f"Acurácia teste: {accuracy_score(y_test_norm, preds_test):.4f}")
+    print(f"F1-score teste (macro): {f1_score(y_test_norm, preds_test, average='macro'):.4f}")
+
+    # ----- Curvas ROC POSITIVE e NEGATIVE -----
+    # Probabilidades da classe POSITIVE
+    y_test_pos_prob = [p['score'] if p['label'] == 'POSITIVE' else 1 - p['score'] for p in preds_test_raw]
+    y_test_bin_pos = [1 if y == "POSITIVE" else 0 for y in y_test_norm]
+
+    # Probabilidades da classe NEGATIVE
+    y_test_neg_prob = [p['score'] if p['label'] == 'NEGATIVE' else 1 - p['score'] for p in preds_test_raw]
+    y_test_bin_neg = [1 if y == "NEGATIVE" else 0 for y in y_test_norm]
+
+    # ROC POSITIVE
+    roc_auc_pos = roc_auc_score(y_test_bin_pos, y_test_pos_prob)
+    fpr_pos, tpr_pos, _ = roc_curve(y_test_bin_pos, y_test_pos_prob)
+
+    # ROC NEGATIVE
+    roc_auc_neg = roc_auc_score(y_test_bin_neg, y_test_neg_prob)
+    fpr_neg, tpr_neg, _ = roc_curve(y_test_bin_neg, y_test_neg_prob)
+
+    # Plotando as curvas
+    plt.figure(figsize=(8,6))
+    plt.plot(fpr_pos, tpr_pos, label=f"POSITIVE (AUC = {roc_auc_pos:.2f})")
+    plt.plot(fpr_neg, tpr_neg, label=f"NEGATIVE (AUC = {roc_auc_neg:.2f})", linestyle='--')
+    plt.plot([0, 1], [0, 1], 'k--')
+    plt.title("Curvas ROC - DistilBERT")
+    plt.xlabel("False Positive Rate")
+    plt.ylabel("True Positive Rate")
+    plt.legend()
+    plt.grid(True)
+    plt.show()
 
 #----------- Analise de erros ----------
 def analyze_errors(RESULTS, model, X_test, y_test, texts_test, emb_cols, model_name):
